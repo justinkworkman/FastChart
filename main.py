@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
 from collections import Counter
@@ -20,6 +20,10 @@ class LayoutConfig(BaseModel):
 class ReportRequest(BaseModel):
     data: List[Dict[str, Any]]
     layout: LayoutConfig
+
+@app.get("/healthz", response_class=PlainTextResponse)
+async def healthz():
+    return "OK"
 
 @app.post("/generate-report", response_class=HTMLResponse)
 async def generate_report(request: ReportRequest):

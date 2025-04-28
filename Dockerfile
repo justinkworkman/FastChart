@@ -8,13 +8,14 @@ WORKDIR /app
 COPY . .
 
 # Install required Python packages
-RUN pip install --no-cache-dir fastapi uvicorn
+RUN pip install --no-cache-dir fastapi uvicorn gunicorn
 
-# Expose a default port (optional, for local use)
+# Expose a default port (optional, mostly for local Docker use)
 EXPOSE 8888
 
-# Use environment variable PORT, default to 8888 if not set
+# Use environment variable PORT, default to 8000 if not set
 ENV PORT=8888
+ENV WORKERS=2
 
-# Start Uvicorn and bind to PORT dynamically
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
+# Start Gunicorn with Uvicorn workers
+CMD ["sh", "-c", "gunicorn main:app --workers $WORKERS --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT"]
