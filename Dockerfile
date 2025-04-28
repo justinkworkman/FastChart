@@ -4,14 +4,17 @@ FROM python:3.12-slim
 # Set working directory
 WORKDIR /app
 
-# Copy project files (Coolify already cloned them into build context)
+# Copy project files
 COPY . .
 
 # Install required Python packages
 RUN pip install --no-cache-dir fastapi uvicorn
 
-# Expose port for Uvicorn
-EXPOSE 8000
+# Expose a default port (optional, for local use)
+EXPOSE 8888
 
-# Start Uvicorn
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use environment variable PORT, default to 8888 if not set
+ENV PORT=8888
+
+# Start Uvicorn and bind to PORT dynamically
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
