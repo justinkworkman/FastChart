@@ -20,7 +20,7 @@ class ChartDefinition(BaseModel):
     title: Optional[str] = ""
     calculation: Literal["count", "sum", "average", "min", "max"] = "count"
     field: str
-    value_field: Optional[str] = None  # For sum, avg, min, max
+    value_field: Optional[str] = None
     labels: Optional[LabelsConfig] = LabelsConfig()
 
 class LayoutConfig(BaseModel):
@@ -37,15 +37,16 @@ async def generate_report(request: ReportRequest):
 
     html_parts = [
         "<html><head><style>",
-        "body { font-family: Arial, sans-serif; padding: 20px; }",
-        "h2 { margin-top: 40px; }",
-        ".chart { margin-bottom: 40px; }",
-        ".bar, .column { background-color: #eee; margin: 5px 0; position: relative; height: 30px; }",
-        ".bar div, .column div { height: 100%; text-align: right; padding-right: 5px; color: white; font-weight: bold; }",
-        ".line-chart { width: 100%; height: 300px; }",
-        ".line { fill: none; stroke-width: 2; }",
+        "body { font-family: Arial, sans-serif; padding: 20px; background: #f9f9f9; }",
+        "h1 { font-size: 28px; margin-bottom: 30px; }",
+        "h2 { font-size: 22px; margin-top: 40px; margin-bottom: 10px; }",
+        ".chart { background: white; border-radius: 8px; padding: 20px; margin-bottom: 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }",
+        ".bar-container, .column-container { margin-top: 10px; }",
+        ".bar, .column { height: 30px; margin: 5px 0; background: #eee; position: relative; }",
+        ".bar div, .column div { height: 100%; text-align: right; padding-right: 8px; color: white; font-weight: bold; border-radius: 4px; display: flex; align-items: center; justify-content: flex-end; }",
+        ".line-point { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }",
         "</style></head><body>",
-        "<h1>Report</h1>"
+        "<h1>Generated Report</h1>"
     ]
 
     for chart_def in layout.charts:
@@ -93,47 +94,33 @@ def render_chart(data, chart_def):
 
     if chart_type == "pie":
         total = sum(agg.values())
-        html.append('<svg width="300" height="300" viewBox="0 0 32 32">')
-        start_angle = 0
         for idx, (k, v) in enumerate(agg.items()):
-            if total == 0:
-                continue
-            portion = v / total
-            end_angle = start_angle + portion * 360
-            large_arc = 1 if end_angle - start_angle > 180 else 0
-            x1 = 16 + 16 * math.cos(math.radians(start_angle))
-            y1 = 16 + 16 * math.sin(math.radians(start_angle))
-            x2 = 16 + 16 * math.cos(math.radians(end_angle))
-            y2 = 16 + 16 * math.sin(math.radians(end_angle))
-            path = f"M16,16 L{x1},{y1} A16,16 0 {large_arc},1 {x2},{y2} z"
+            percent = (v / total) * 100 if total else 0
             color = colors[idx % len(colors)]
-            html.append(f'<path d="{path}" fill="{color}"></path>')
-            start_angle = end_angle
-        html.append('</svg>')
+            html.append(f'<div style="margin:5px 0;">')
+            html.append(f'<div style="width:{percent}%; background:{color}; color:white; padding:5px; border-radius:4px;">{k} ({percent:.1f}%)</div>')
+            html.append(f'</div>')
 
     elif chart_type in {"bar", "column"}:
         max_value = max(agg.values(), default=1)
+        container_class = "bar-container" if chart_type == "bar" else "column-container"
+        html.append(f'<div class="{container_class}">')
         for idx, (k, v) in enumerate(agg.items()):
             width_percent = (v / max_value) * 100
             color = colors[idx % len(colors)]
-            html.append(f'<div class="{chart_type}"><div style="width:{width_percent}%;background:{color}">{k} ({v})</div></div>')
+            html.append(f'<div class="{chart_type}"><div style="width:{width_percent}%;background:{color};">{k} ({v:.1f})</div></div>')
+        html.append('</div>')
 
     elif chart_type == "line":
-        # Simple text-based line chart
         max_value = max(agg.values(), default=1)
-        html.append('<svg class="line-chart" viewBox="0 0 100 100">')
-        points = []
         keys = list(agg.keys())
-        for i, k in enumerate(keys):
-            x = (i / (len(keys) - 1)) * 100 if len(keys) > 1 else 50
-            y = 100 - (agg[k] / max_value * 100)
-            points.append(f"{x},{y}")
-        if points:
-            color = colors[0 % len(colors)]
-            html.append(f'<polyline points="{" ".join(points)}" class="line" stroke="{color}"></polyline>')
-        html.append('</svg>')
+        values = list(agg.values())
+        html.append('<div style="margin-top:10px;">')
+        for idx, (k, v) in enumerate(zip(keys, values)):
+            color = colors[idx % len(colors)]
+            size = int((v / max_value) * 20) + 5  # scale dot size
+            html.append(f'<div style="display:flex;align-items:center;margin:4px 0;"><div class="line-point" style="background:{color};width:{size}px;height:{size}px;"></div><span style="margin-left:5px;">{k} ({v:.1f})</span></div>')
+        html.append('</div>')
 
     html.append('</div>')
     return "".join(html)
-
-import math
