@@ -1,143 +1,139 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
-from pydantic import BaseModel
-from typing import List, Dict, Any
-from collections import Counter
-import math
+# main.py
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+from typing import List, Optional, Literal, Dict, Any
+import statistics
 
 app = FastAPI()
 
-class ChartConfig(BaseModel):
-    type: str  # "pie" or "bar"
-    calculation: str  # "count", "average", etc (only "count" supported now)
-    field: str  # field to aggregate on
+class LabelsConfig(BaseModel):
+    titleFontSize: Optional[str] = "20px"
+    labelFontSize: Optional[str] = "14px"
+    colors: Optional[List[str]] = Field(default_factory=lambda: [
+        "#4CAF50", "#FF9800", "#2196F3", "#F44336", "#9C27B0"
+    ])
+
+class ChartDefinition(BaseModel):
+    type: Literal["pie", "bar", "column", "line"]
+    title: Optional[str] = ""
+    calculation: Literal["count", "sum", "average", "min", "max"] = "count"
+    field: str
+    value_field: Optional[str] = None  # For sum, avg, min, max
+    labels: Optional[LabelsConfig] = LabelsConfig()
 
 class LayoutConfig(BaseModel):
-    rows: int
-    columns: int
-    charts: List[ChartConfig]
+    charts: List[ChartDefinition]
 
 class ReportRequest(BaseModel):
     data: List[Dict[str, Any]]
     layout: LayoutConfig
 
-@app.get("/healthz", response_class=PlainTextResponse)
-async def healthz():
-    return "OK"
-
-@app.post("/generate-report", response_class=HTMLResponse)
+@app.post("/generate", response_class=HTMLResponse)
 async def generate_report(request: ReportRequest):
     data = request.data
     layout = request.layout
 
-    charts_html = []
+    html_parts = [
+        "<html><head><style>",
+        "body { font-family: Arial, sans-serif; padding: 20px; }",
+        "h2 { margin-top: 40px; }",
+        ".chart { margin-bottom: 40px; }",
+        ".bar, .column { background-color: #eee; margin: 5px 0; position: relative; height: 30px; }",
+        ".bar div, .column div { height: 100%; text-align: right; padding-right: 5px; color: white; font-weight: bold; }",
+        ".line-chart { width: 100%; height: 300px; }",
+        ".line { fill: none; stroke-width: 2; }",
+        "</style></head><body>",
+        "<h1>Report</h1>"
+    ]
 
-    for chart in layout.charts:
-        aggregation = aggregate_data(data, chart.calculation, chart.field)
+    for chart_def in layout.charts:
+        html_parts.append(render_chart(data, chart_def.model_dump()))
 
-        if chart.type == "pie":
-            svg = generate_pie_chart(aggregation)
-        elif chart.type == "bar":
-            svg = generate_bar_chart(aggregation)
+    html_parts.append("</body></html>")
+    return "".join(html_parts)
+
+def render_chart(data, chart_def):
+    chart_type = chart_def.get("type")
+    title = chart_def.get("title", "")
+    field = chart_def.get("field")
+    calculation = chart_def.get("calculation", "count")
+    value_field = chart_def.get("value_field")
+    labels_conf = chart_def.get("labels", {})
+    colors = labels_conf.get("colors", ["#4CAF50", "#FF9800", "#2196F3", "#F44336", "#9C27B0"])
+
+    # Aggregation
+    agg = {}
+    for item in data:
+        key = item.get(field, "Unknown")
+        if calculation == "count":
+            agg[key] = agg.get(key, 0) + 1
         else:
-            svg = f"<div>Unsupported chart type: {chart.type}</div>"
+            try:
+                val = float(item.get(value_field, 0))
+            except (TypeError, ValueError):
+                val = 0
+            if key not in agg:
+                agg[key] = []
+            agg[key].append(val)
 
-        charts_html.append(svg)
+    if calculation in {"sum", "average", "min", "max"}:
+        for k in agg:
+            if calculation == "sum":
+                agg[k] = sum(agg[k])
+            elif calculation == "average":
+                agg[k] = statistics.mean(agg[k]) if agg[k] else 0
+            elif calculation == "min":
+                agg[k] = min(agg[k]) if agg[k] else 0
+            elif calculation == "max":
+                agg[k] = max(agg[k]) if agg[k] else 0
 
-    html = build_html_page(charts_html, layout.rows, layout.columns)
-    return HTMLResponse(content=html)
+    html = [f'<div class="chart"><h2>{title}</h2>']
 
-def aggregate_data(data, calculation, field):
-    if calculation == "count":
-        values = [item.get(field, "Unknown") for item in data]
-        counter = Counter(values)
-        return dict(counter)
-    else:
-        return {}  # Extend here for average, sum, etc.
+    if chart_type == "pie":
+        total = sum(agg.values())
+        html.append('<svg width="300" height="300" viewBox="0 0 32 32">')
+        start_angle = 0
+        for idx, (k, v) in enumerate(agg.items()):
+            if total == 0:
+                continue
+            portion = v / total
+            end_angle = start_angle + portion * 360
+            large_arc = 1 if end_angle - start_angle > 180 else 0
+            x1 = 16 + 16 * math.cos(math.radians(start_angle))
+            y1 = 16 + 16 * math.sin(math.radians(start_angle))
+            x2 = 16 + 16 * math.cos(math.radians(end_angle))
+            y2 = 16 + 16 * math.sin(math.radians(end_angle))
+            path = f"M16,16 L{x1},{y1} A16,16 0 {large_arc},1 {x2},{y2} z"
+            color = colors[idx % len(colors)]
+            html.append(f'<path d="{path}" fill="{color}"></path>')
+            start_angle = end_angle
+        html.append('</svg>')
 
-def generate_pie_chart(aggregation):
-    total = sum(aggregation.values())
-    angles = []
-    for value in aggregation.values():
-        angles.append((value / total) * 360)
+    elif chart_type in {"bar", "column"}:
+        max_value = max(agg.values(), default=1)
+        for idx, (k, v) in enumerate(agg.items()):
+            width_percent = (v / max_value) * 100
+            color = colors[idx % len(colors)]
+            html.append(f'<div class="{chart_type}"><div style="width:{width_percent}%;background:{color}">{k} ({v})</div></div>')
 
-    svg_parts = []
-    start_angle = 0
-    radius = 100
-    cx, cy = 120, 120
-    colors = ["#4F46E5", "#06B6D4", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"]
+    elif chart_type == "line":
+        # Simple text-based line chart
+        max_value = max(agg.values(), default=1)
+        html.append('<svg class="line-chart" viewBox="0 0 100 100">')
+        points = []
+        keys = list(agg.keys())
+        for i, k in enumerate(keys):
+            x = (i / (len(keys) - 1)) * 100 if len(keys) > 1 else 50
+            y = 100 - (agg[k] / max_value * 100)
+            points.append(f"{x},{y}")
+        if points:
+            color = colors[0 % len(colors)]
+            html.append(f'<polyline points="{" ".join(points)}" class="line" stroke="{color}"></polyline>')
+        html.append('</svg>')
 
-    for idx, (label, count) in enumerate(aggregation.items()):
-        end_angle = start_angle + (count / total) * 360
-        x1 = cx + radius * math.cos(math.radians(start_angle))
-        y1 = cy + radius * math.sin(math.radians(start_angle))
-        x2 = cx + radius * math.cos(math.radians(end_angle))
-        y2 = cy + radius * math.sin(math.radians(end_angle))
-        large_arc = 1 if end_angle - start_angle > 180 else 0
-        color = colors[idx % len(colors)]
+    html.append('</div>')
+    return "".join(html)
 
-        path = f'''
-        <path d="M{cx},{cy} L{x1},{y1} A{radius},{radius} 0 {large_arc},1 {x2},{y2} Z" fill="{color}" />
-        '''
-        svg_parts.append(path)
-        start_angle = end_angle
-
-    svg = f'''
-    <svg viewBox="0 0 240 240" width="240" height="240">
-        {''.join(svg_parts)}
-    </svg>
-    '''
-    return svg
-
-def generate_bar_chart(aggregation):
-    max_value = max(aggregation.values())
-    bar_width = 40
-    bar_gap = 20
-    svg_width = (bar_width + bar_gap) * len(aggregation)
-    svg_height = 200
-    colors = ["#4F46E5", "#06B6D4", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6"]
-
-    svg_parts = []
-    for idx, (label, count) in enumerate(aggregation.items()):
-        height = (count / max_value) * svg_height
-        x = idx * (bar_width + bar_gap)
-        y = svg_height - height
-        color = colors[idx % len(colors)]
-        svg_parts.append(f'''
-            <rect x="{x}" y="{y}" width="{bar_width}" height="{height}" fill="{color}" />
-            <text x="{x + bar_width / 2}" y="{svg_height + 15}" font-size="12" text-anchor="middle">{label}</text>
-        ''')
-
-    svg = f'''
-    <svg viewBox="0 0 {svg_width} {svg_height + 30}" width="{svg_width}" height="{svg_height + 30}">
-        {''.join(svg_parts)}
-    </svg>
-    '''
-    return svg
-
-def build_html_page(charts_html, rows, columns):
-    embedded_css = """
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f9fafb; margin: 0; padding: 2rem; }
-        .grid { display: grid; gap: 2rem; }
-        .card { background: white; border-radius: 12px; padding: 1.5rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        svg { display: block; margin: 0 auto; }
-    </style>
-    """
-
-    grid_style = f"grid-template-columns: repeat({columns}, 1fr);"
-
-    html = f'''
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        {embedded_css}
-    </head>
-    <body>
-        <div class="grid" style="{grid_style}">
-            {''.join(f'<div class="card">{chart}</div>' for chart in charts_html)}
-        </div>
-    </body>
-    </html>
-    '''
-    return html
+import math
