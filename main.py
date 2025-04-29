@@ -1,126 +1,148 @@
-# main.py
-
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
-from typing import List, Optional, Literal, Dict, Any
+from pydantic import BaseModel
+from typing import List, Optional
+import uvicorn
+from collections import defaultdict
 import statistics
+import os
 
 app = FastAPI()
 
-class LabelsConfig(BaseModel):
-    titleFontSize: Optional[str] = "20px"
-    labelFontSize: Optional[str] = "14px"
-    colors: Optional[List[str]] = Field(default_factory=lambda: [
-        "#4CAF50", "#FF9800", "#2196F3", "#F44336", "#9C27B0"
-    ])
-
 class ChartDefinition(BaseModel):
-    type: Literal["pie", "bar", "column", "line"]
-    title: Optional[str] = ""
-    calculation: Literal["count", "sum", "average", "min", "max"] = "count"
+    title: Optional[str] = None
+    type: str  # pie, bar, column, line
+    calculation: str  # sum, count, average, min, max
     field: str
-    value_field: Optional[str] = None
-    labels: Optional[LabelsConfig] = LabelsConfig()
+    label_field: Optional[str] = None
+    color_field: Optional[str] = None
 
-class LayoutConfig(BaseModel):
+class LayoutDefinition(BaseModel):
+    columns: int
     charts: List[ChartDefinition]
 
 class ReportRequest(BaseModel):
-    data: List[Dict[str, Any]]
-    layout: LayoutConfig
+    data: List[dict]
+    layout: LayoutDefinition
 
-@app.post("/generate", response_class=HTMLResponse)
-async def generate_report(request: ReportRequest):
+def aggregate_data(data: List[dict], chart: ChartDefinition):
+    groups = defaultdict(list)
+    for item in data:
+        key = item.get(chart.label_field) if chart.label_field else "All"
+        value = item.get(chart.field)
+        if value is not None:
+            groups[key].append(value)
+
+    result = {}
+    for key, values in groups.items():
+        if chart.calculation == "sum":
+            result[key] = sum(values)
+        elif chart.calculation == "count":
+            result[key] = len(values)
+        elif chart.calculation == "average":
+            result[key] = statistics.mean(values)
+        elif chart.calculation == "min":
+            result[key] = min(values)
+        elif chart.calculation == "max":
+            result[key] = max(values)
+        else:
+            result[key] = 0
+    return result
+
+def generate_chart_html(chart: ChartDefinition, aggregated_data: dict):
+    labels = list(aggregated_data.keys())
+    values = list(aggregated_data.values())
+
+    # Create simple table chart for email safety
+    table_rows = ""
+    for label, value in zip(labels, values):
+        table_rows += f"""
+        <tr>
+            <td style="padding: 8px; border: 1px solid #ddd;">{label}</td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">{value}</td>
+        </tr>
+        """
+
+    return f"""
+    <div style="margin-bottom: 20px;">
+        <div class="chart-title">{chart.title or ''}</div>
+        <table style="width:100%; border-collapse: collapse;">
+            <thead>
+                <tr>
+                    <th style="padding: 8px; border: 1px solid #ddd; background: #f0f0f0;">{chart.label_field or "Label"}</th>
+                    <th style="padding: 8px; border: 1px solid #ddd; background: #f0f0f0;">{chart.calculation.title()} of {chart.field}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {table_rows}
+            </tbody>
+        </table>
+    </div>
+    """
+
+@app.post("/render", response_class=HTMLResponse)
+async def render_report(request: ReportRequest):
     data = request.data
     layout = request.layout
 
-    html_parts = [
-        "<html><head><style>",
-        "body { font-family: Arial, sans-serif; padding: 20px; background: #f9f9f9; }",
-        "h1 { font-size: 28px; margin-bottom: 30px; }",
-        "h2 { font-size: 22px; margin-top: 40px; margin-bottom: 10px; }",
-        ".chart { background: white; border-radius: 8px; padding: 20px; margin-bottom: 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }",
-        ".bar-container, .column-container { margin-top: 10px; }",
-        ".bar, .column { height: 30px; margin: 5px 0; background: #eee; position: relative; }",
-        ".bar div, .column div { height: 100%; text-align: right; padding-right: 8px; color: white; font-weight: bold; border-radius: 4px; display: flex; align-items: center; justify-content: flex-end; }",
-        ".line-point { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }",
-        "</style></head><body>",
-        "<h1>Generated Report</h1>"
-    ]
-
+    html_charts = []
     for chart_def in layout.charts:
-        html_parts.append(render_chart(data, chart_def.model_dump()))
+        aggregated = aggregate_data(data, chart_def)
+        chart_html = generate_chart_html(chart_def, aggregated)
+        html_charts.append(chart_html)
 
-    html_parts.append("</body></html>")
-    return "".join(html_parts)
+    # Build the full table layout
+    rows_html = ""
+    for i in range(0, len(html_charts), layout.columns):
+        row_charts = html_charts[i:i + layout.columns]
+        row_html = "<tr>"
+        for chart_html in row_charts:
+            row_html += f"<td style='padding: 10px; vertical-align: top;'>{chart_html}</td>"
+        # Pad with empty cells if needed
+        if len(row_charts) < layout.columns:
+            for _ in range(layout.columns - len(row_charts)):
+                row_html += "<td></td>"
+        row_html += "</tr>"
+        rows_html += row_html
 
-def render_chart(data, chart_def):
-    chart_type = chart_def.get("type")
-    title = chart_def.get("title", "")
-    field = chart_def.get("field")
-    calculation = chart_def.get("calculation", "count")
-    value_field = chart_def.get("value_field")
-    labels_conf = chart_def.get("labels", {})
-    colors = labels_conf.get("colors", ["#4CAF50", "#FF9800", "#2196F3", "#F44336", "#9C27B0"])
+    full_html = f"""
+    <html>
+    <head>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            padding: 20px;
+        }}
+        table.layout {{
+            width: 100%;
+            border-collapse: collapse;
+        }}
+        table.layout td {{
+            background: white;
+            border: 1px solid #ddd;
+            padding: 20px;
+            vertical-align: top;
+        }}
+        .chart-title {{
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #333;
+            text-align: center;
+        }}
+    </style>
+    </head>
+    <body>
+        <table class="layout">
+            {rows_html}
+        </table>
+    </body>
+    </html>
+    """
 
-    # Aggregation
-    agg = {}
-    for item in data:
-        key = item.get(field, "Unknown")
-        if calculation == "count":
-            agg[key] = agg.get(key, 0) + 1
-        else:
-            try:
-                val = float(item.get(value_field, 0))
-            except (TypeError, ValueError):
-                val = 0
-            if key not in agg:
-                agg[key] = []
-            agg[key].append(val)
+    return HTMLResponse(content=full_html)
 
-    if calculation in {"sum", "average", "min", "max"}:
-        for k in agg:
-            if calculation == "sum":
-                agg[k] = sum(agg[k])
-            elif calculation == "average":
-                agg[k] = statistics.mean(agg[k]) if agg[k] else 0
-            elif calculation == "min":
-                agg[k] = min(agg[k]) if agg[k] else 0
-            elif calculation == "max":
-                agg[k] = max(agg[k]) if agg[k] else 0
-
-    html = [f'<div class="chart"><h2>{title}</h2>']
-
-    if chart_type == "pie":
-        total = sum(agg.values())
-        for idx, (k, v) in enumerate(agg.items()):
-            percent = (v / total) * 100 if total else 0
-            color = colors[idx % len(colors)]
-            html.append(f'<div style="margin:5px 0;">')
-            html.append(f'<div style="width:{percent}%; background:{color}; color:white; padding:5px; border-radius:4px;">{k} ({percent:.1f}%)</div>')
-            html.append(f'</div>')
-
-    elif chart_type in {"bar", "column"}:
-        max_value = max(agg.values(), default=1)
-        container_class = "bar-container" if chart_type == "bar" else "column-container"
-        html.append(f'<div class="{container_class}">')
-        for idx, (k, v) in enumerate(agg.items()):
-            width_percent = (v / max_value) * 100
-            color = colors[idx % len(colors)]
-            html.append(f'<div class="{chart_type}"><div style="width:{width_percent}%;background:{color};">{k} ({v:.1f})</div></div>')
-        html.append('</div>')
-
-    elif chart_type == "line":
-        max_value = max(agg.values(), default=1)
-        keys = list(agg.keys())
-        values = list(agg.values())
-        html.append('<div style="margin-top:10px;">')
-        for idx, (k, v) in enumerate(zip(keys, values)):
-            color = colors[idx % len(colors)]
-            size = int((v / max_value) * 20) + 5  # scale dot size
-            html.append(f'<div style="display:flex;align-items:center;margin:4px 0;"><div class="line-point" style="background:{color};width:{size}px;height:{size}px;"></div><span style="margin-left:5px;">{k} ({v:.1f})</span></div>')
-        html.append('</div>')
-
-    html.append('</div>')
-    return "".join(html)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
