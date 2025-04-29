@@ -53,32 +53,42 @@ def generate_chart_html(chart: ChartDefinition, aggregated_data: dict):
     labels = list(aggregated_data.keys())
     values = list(aggregated_data.values())
 
-    # Create simple table chart for email safety
-    table_rows = ""
-    for label, value in zip(labels, values):
-        table_rows += f"""
-        <tr>
-            <td style="padding: 8px; border: 1px solid #ddd;">{label}</td>
-            <td style="padding: 8px; border: 1px solid #ddd; text-align: right;">{value}</td>
-        </tr>
+    if chart.type == "pie":
+        total = sum(values)
+        pie_html = ""
+        for label, value in zip(labels, values):
+            percentage = (value / total) * 100
+            pie_html += f"""
+            <div style="width: {percentage}%; background-color: #4CAF50; color: white; text-align: center; padding: 8px;">
+                {label}: {value} ({percentage:.2f}%)
+            </div>
+            """
+        return f"""
+        <div style="margin-bottom: 20px;">
+            <div class="chart-title">{chart.title or ''}</div>
+            {pie_html}
+        </div>
         """
 
-    return f"""
-    <div style="margin-bottom: 20px;">
-        <div class="chart-title">{chart.title or ''}</div>
-        <table style="width:100%; border-collapse: collapse;">
-            <thead>
-                <tr>
-                    <th style="padding: 8px; border: 1px solid #ddd; background: #f0f0f0;">{chart.label_field or "Label"}</th>
-                    <th style="padding: 8px; border: 1px solid #ddd; background: #f0f0f0;">{chart.calculation.title()} of {chart.field}</th>
-                </tr>
-            </thead>
-            <tbody>
-                {table_rows}
-            </tbody>
-        </table>
-    </div>
-    """
+    elif chart.type in ["bar", "column", "line"]:
+        max_value = max(values)
+        bar_html = ""
+        for label, value in zip(labels, values):
+            bar_width = (value / max_value) * 100
+            bar_html += f"""
+            <div style="margin-bottom: 10px;">
+                <div style="background-color: #4CAF50; width: {bar_width}%; height: 30px; color: white; text-align: center; line-height: 30px;">
+                    {label}: {value}
+                </div>
+            </div>
+            """
+        return f"""
+        <div style="margin-bottom: 20px;">
+            <div class="chart-title">{chart.title or ''}</div>
+            {bar_html}
+        </div>
+        """
+    return ""
 
 @app.post("/render", response_class=HTMLResponse)
 async def render_report(request: ReportRequest):
